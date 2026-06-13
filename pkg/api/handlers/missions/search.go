@@ -42,8 +42,10 @@ func (h *MissionsHandler) SearchMissions(c *fiber.Ctx) error {
 	if query == "" {
 		return fiber.NewError(fiber.StatusBadRequest, "missing required query parameter 'q'")
 	}
-	if len(query) > searchMaxQueryLen {
-		query = query[:searchMaxQueryLen]
+	// Truncate by rune count, not bytes, so we never split a multi-byte UTF-8
+	// character (which would corrupt the echoed query, gap keys, and logs).
+	if r := []rune(query); len(r) > searchMaxQueryLen {
+		query = string(r[:searchMaxQueryLen])
 	}
 
 	k := searchDefaultK
@@ -89,16 +91,29 @@ func (h *MissionsHandler) getRetriever(c *fiber.Ctx) (*rag.Retriever, error) {
 	sum := sha256.Sum256(body)
 	fingerprint := hex.EncodeToString(sum[:])
 
+	// Fast path: return the cached retriever under a short lock if the index is
+	// unchanged.
 	h.retrieverMu.Lock()
-	defer h.retrieverMu.Unlock()
-
 	if h.retriever != nil && h.retrieverFingerprint == fingerprint {
-		return h.retriever, nil
+		r := h.retriever
+		h.retrieverMu.Unlock()
+		return r, nil
 	}
+	h.retrieverMu.Unlock()
 
+	// Build outside the lock so concurrent /search calls are not blocked during
+	// embedding/indexing. A redundant build under a first-time stampede is
+	// acceptable; only the publish step is serialized.
 	retriever, err := rag.NewDefaultRetrieverFromIndex(body)
 	if err != nil {
 		return nil, err
+	}
+
+	h.retrieverMu.Lock()
+	defer h.retrieverMu.Unlock()
+	// Re-check: another goroutine may have published the same index meanwhile.
+	if h.retriever != nil && h.retrieverFingerprint == fingerprint {
+		return h.retriever, nil
 	}
 	h.retriever = retriever
 	h.retrieverFingerprint = fingerprint

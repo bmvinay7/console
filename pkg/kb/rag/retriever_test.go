@@ -1,6 +1,9 @@
 package rag
 
-import "testing"
+import (
+	"math"
+	"testing"
+)
 
 // miniCorpus mirrors the real KB shape closely enough to validate retrieval
 // behavior (asymmetric encoding, hybrid fusion, late chunking) without needing
@@ -154,6 +157,53 @@ func TestParseCorpus(t *testing.T) {
 	}
 	if len(docs) != 1 {
 		t.Fatalf("expected 1 usable doc (untitled skipped), got %d", len(docs))
+	}
+}
+
+func TestExpandQuery_NoDuplicateTerms(t *testing.T) {
+	// conceptExpansions["ingress"] includes "ingress"; it must not be repeated.
+	got := expandQuery("install ingress")
+	count := 0
+	for _, tok := range tokenize(got) {
+		if tok == "ingress" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("expected 'ingress' exactly once after expansion, got %d (%q)", count, got)
+	}
+}
+
+func TestSearch_DeterministicOrdering(t *testing.T) {
+	r := NewDefaultRetriever(miniCorpus())
+	const query = "install kubernetes on the cluster"
+	first := r.Search(query, 5)
+	for i := 0; i < 20; i++ {
+		got := r.Search(query, 5)
+		if len(got) != len(first) {
+			t.Fatalf("result count changed across runs: %d vs %d", len(got), len(first))
+		}
+		for j := range got {
+			if got[j].Document.Path != first[j].Document.Path {
+				t.Fatalf("ordering not deterministic at %d: %q vs %q", j, got[j].Document.Path, first[j].Document.Path)
+			}
+		}
+	}
+}
+
+func TestRetriever_AllStopwordCorpusNoNaN(t *testing.T) {
+	// Documents that tokenize to nothing must not produce NaN/Inf or panic
+	// (BM25 avgLen would otherwise divide by zero).
+	docs := []Document{
+		{Path: "a.json", Title: "the and of", MissionClass: "install"},
+		{Path: "b.json", Title: "to in on", MissionClass: "install"},
+	}
+	r := NewDefaultRetriever(docs)
+	res := r.Search("the and", 3)
+	for _, hit := range res {
+		if math.IsNaN(hit.Score) || math.IsInf(hit.Score, 0) {
+			t.Fatalf("non-finite score: %v", hit.Score)
+		}
 	}
 }
 

@@ -40,17 +40,24 @@ var conceptExpansions = map[string][]string{
 }
 
 // expandQuery appends curated concept synonyms to a query so lexical and dense
-// scoring reach the right missions. Original terms are preserved; expansions
-// are added once each to avoid over-weighting.
+// scoring reach the right missions. Original terms are preserved; each synonym
+// is added at most once and is skipped if it already appears in the query, so a
+// mapping like "ingress" -> {"ingress", ...} does not double-weight a term.
 func expandQuery(query string) string {
-	added := make(map[string]struct{})
+	toks := tokenize(query)
+	// seen seeds with the original query tokens so synonyms equal to an existing
+	// term (or to an earlier-added synonym) are not duplicated.
+	seen := make(map[string]struct{}, len(toks))
+	for _, t := range toks {
+		seen[t] = struct{}{}
+	}
 	var extra []string
-	for _, tok := range tokenize(query) {
+	for _, tok := range toks {
 		for _, syn := range conceptExpansions[tok] {
-			if _, ok := added[syn]; ok {
+			if _, ok := seen[syn]; ok {
 				continue
 			}
-			added[syn] = struct{}{}
+			seen[syn] = struct{}{}
 			extra = append(extra, syn)
 		}
 	}

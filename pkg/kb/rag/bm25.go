@@ -48,6 +48,12 @@ func newBM25Index(corpus []string) *bm25Index {
 	if len(corpus) > 0 {
 		idx.avgLen = total / float64(len(corpus))
 	}
+	// Guard against a zero average length (every document tokenized to nothing,
+	// e.g. empty text or all-stopword input). A zero avgLen would make the
+	// length-normalization term divide by zero and yield Inf/NaN scores.
+	if idx.avgLen == 0 {
+		idx.avgLen = 1
+	}
 	n := float64(len(corpus))
 	for term, d := range df {
 		idx.idf[term] = math.Log(1 + (n-float64(d)+0.5)/(float64(d)+0.5))

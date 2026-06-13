@@ -1,6 +1,9 @@
 package rag
 
-import "sort"
+import (
+	"math"
+	"sort"
+)
 
 const (
 	// rrfK is the Reciprocal Rank Fusion constant. 60 is the value from the
@@ -124,7 +127,22 @@ func (r *Retriever) Search(query string, k int) []Result {
 			LexicalRank: f.lexRank,
 		})
 	}
-	sort.SliceStable(out, func(i, j int) bool { return out[i].Score > out[j].Score })
+	// Deterministic ordering: score desc, then lexical rank, then dense rank,
+	// then document path. Without explicit tie-breakers a Score tie would fall
+	// back to the randomized map-iteration order, producing flaky rankings.
+	sort.SliceStable(out, func(i, j int) bool {
+		a, b := out[i], out[j]
+		if a.Score != b.Score {
+			return a.Score > b.Score
+		}
+		if ra, rb := rankOrLast(a.LexicalRank), rankOrLast(b.LexicalRank); ra != rb {
+			return ra < rb
+		}
+		if da, db := rankOrLast(a.DenseRank), rankOrLast(b.DenseRank); da != db {
+			return da < db
+		}
+		return a.Document.Path < b.Document.Path
+	})
 	if len(out) > k {
 		out = out[:k]
 	}
@@ -153,6 +171,15 @@ func (r *Retriever) denseDocScores(query string) []float64 {
 		scores[docIdx] = best
 	}
 	return scores
+}
+
+// rankOrLast maps an absent rank (0) to a large value so present ranks sort
+// ahead of absent ones in tie-breaking.
+func rankOrLast(rank int) int {
+	if rank == 0 {
+		return math.MaxInt32
+	}
+	return rank
 }
 
 // ranking returns document indices ordered by descending score. Documents with
